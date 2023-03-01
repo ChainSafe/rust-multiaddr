@@ -32,6 +32,7 @@ const WEBRTC: u32 = 280;
 const CERTHASH: u32 = 466;
 const P2P_WEBSOCKET_STAR: u32 = 479;
 const MEMORY: u32 = 777;
+const NYM: u32 = 999; // arbitrary
 const ONION: u32 = 444;
 const ONION3: u32 = 445;
 const P2P: u32 = 421;
@@ -89,6 +90,7 @@ pub enum Protocol<'a> {
     P2pWebSocketStar,
     /// Contains the "port" to contact. Similar to TCP or UDP, 0 means "assign me a port".
     Memory(u64),
+    Nym(Cow<'a, str>),
     Onion(Cow<'a, [u8; 10]>, u16),
     Onion3(Onion3Addr<'a>),
     P2p(Multihash),
@@ -214,6 +216,10 @@ impl<'a> Protocol<'a> {
                 let s = iter.next().ok_or(Error::InvalidProtocolString)?;
                 Ok(Protocol::Memory(s.parse()?))
             }
+            "nym" => {
+                let s = iter.next().ok_or(Error::InvalidProtocolString)?;
+                Ok(Protocol::Nym(Cow::Borrowed(s)))
+            }
             unknown => Err(Error::UnknownProtocolString(unknown.to_string())),
         }
     }
@@ -296,6 +302,11 @@ impl<'a> Protocol<'a> {
                 let mut rdr = Cursor::new(data);
                 let num = rdr.read_u64::<BigEndian>()?;
                 Ok((Protocol::Memory(num), rest))
+            }
+            NYM => {
+                let (n, input) = decode::usize(input)?;
+                let (data, rest) = split_at(n, input)?;
+                Ok((Protocol::Nym(Cow::Borrowed(str::from_utf8(data)?)), rest))
             }
             ONION => {
                 let (data, rest) = split_at(12, input)?;
@@ -480,6 +491,12 @@ impl<'a> Protocol<'a> {
                 w.write_all(encode::u32(MEMORY, &mut buf))?;
                 w.write_u64::<BigEndian>(*port)?
             }
+            Protocol::Nym(s) => {
+                w.write_all(encode::u32(NYM, &mut buf))?;
+                let bytes = s.as_bytes();
+                w.write_all(encode::usize(bytes.len(), &mut encode::usize_buffer()))?;
+                w.write_all(bytes)?
+            }
         }
         Ok(())
     }
@@ -503,6 +520,7 @@ impl<'a> Protocol<'a> {
             Certhash(hash) => Certhash(hash),
             P2pWebSocketStar => P2pWebSocketStar,
             Memory(a) => Memory(a),
+            Nym(cow) => Nym(Cow::Owned(cow.into_owned())),
             Onion(addr, port) => Onion(Cow::Owned(addr.into_owned()), port),
             Onion3(addr) => Onion3(addr.acquire()),
             P2p(a) => P2p(a),
@@ -541,6 +559,7 @@ impl<'a> Protocol<'a> {
             Certhash(_) => "certhash",
             P2pWebSocketStar => "p2p-websocket-star",
             Memory(_) => "memory",
+            Nym(_) => "nym",
             Onion(_, _) => "onion",
             Onion3(_) => "onion3",
             P2p(_) => "p2p",
@@ -582,6 +601,7 @@ impl<'a> fmt::Display for Protocol<'a> {
                 multibase::encode(multibase::Base::Base64Url, hash.to_bytes())
             ),
             Memory(port) => write!(f, "/{port}"),
+            Nym(s) => write!(f, "/{s}"),
             Onion(addr, port) => {
                 let s = BASE32.encode(addr.as_ref());
                 write!(f, "/{}:{}", s.to_lowercase(), port)
